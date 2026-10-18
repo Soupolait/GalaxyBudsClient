@@ -43,6 +43,19 @@ namespace GalaxyBudsClient.Platform.Linux
             }
         }
         
+        private IDisposable? _recoveryWatcher;
+        private int _recoveryBusy;
+
+        private IDisposable? RecoveryWatcher
+        {
+            get => _recoveryWatcher;
+            set
+            {
+                _recoveryWatcher?.Dispose();
+                _recoveryWatcher = value;
+            }
+        }
+
         public event EventHandler? RfcommConnected;
         public event EventHandler? Connecting;
         public event EventHandler? Connected;
@@ -137,6 +150,9 @@ namespace GalaxyBudsClient.Platform.Linux
 
             _currentMac = macAddress;
             _currentUuid = uuid;
+
+            /* A new connect cycle supersedes any pending recovery watcher */
+            RecoveryWatcher = null;
             
             var conn = new Connection(Address.System);
             await conn.ConnectAsync();
@@ -168,6 +184,7 @@ namespace GalaxyBudsClient.Platform.Linux
                 if (attempt >= 5)
                 {
                     Log.Error("Linux.BluetoothService: Gave up after 5 attempts. Timed out");
+                    ArmConnectionRecoveryWatch();
                     throw new BluetoothException(BluetoothException.ErrorCodes.TimedOut, "BlueZ timed out while connecting to device.");
                 }
             }
@@ -179,6 +196,7 @@ namespace GalaxyBudsClient.Platform.Linux
             catch (TimeoutException)
             {
                 Log.Error("Linux.BluetoothService: Timed out while waiting for device to connect");
+                ArmConnectionRecoveryWatch();
                 throw new BluetoothException(BluetoothException.ErrorCodes.TimedOut, "BlueZ timed out while connecting to device.");
             }
 
@@ -304,6 +322,43 @@ namespace GalaxyBudsClient.Platform.Linux
             {
                 Disconnected?.Invoke(this, "Disconnected");
                 Log.Debug("Linux.BluetoothService: Disconnected");
+            }
+        }
+
+        private void ArmConnectionRecoveryWatch()
+        {
+            /* The post-connection watchdog (armed after a successful connect) retries on its own */
+            if (_connectionWatchdog != null || _device == null)
+                return;
+
+            Log.Information("Linux.BluetoothService: Connection failed. Retrying automatically once the device becomes available");
+            RecoveryWatcher = _device.WatchForPropertyChangeAsync("Connected", false, ConnectionRecoveryCallback);
+        }
+
+        private async void ConnectionRecoveryCallback(bool state)
+        {
+            if (!state)
+                return;
+
+            /* One-shot: stop watching before reconnecting */
+            RecoveryWatcher = null;
+
+            /* Skip if already attached; prevent overlapping recovery attempts */
+            if (IsStreamConnected || Interlocked.Exchange(ref _recoveryBusy, 1) == 1)
+                return;
+
+            try
+            {
+                Log.Information("Linux.BluetoothService: Device became available. Retrying connection...");
+                await ConnectAsync(_currentMac, _currentUuid, CancellationToken.None);
+            }
+            catch (BluetoothException ex)
+            {
+                BluetoothErrorAsync?.Invoke(this, ex);
+            }
+            finally
+            {
+                Volatile.Write(ref _recoveryBusy, 0);
             }
         }
 

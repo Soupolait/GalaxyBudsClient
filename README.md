@@ -8,6 +8,11 @@
   <br>
 </h1>
 <h4 align="center">An unofficial manager for Galaxy Buds devices</h4>
+
+> [!NOTE]
+> This repository is a personal fork of [Galaxy Buds Manager](https://github.com/timschneeb/GalaxyBudsClient) with Linux fixes:
+> - Fixes [#640](https://github.com/timschneeb/GalaxyBudsClient/issues/640) ("BlueZ timed out while connecting to device"): after a connection timeout, the app automatically re-attaches to the earbuds as soon as they become available, instead of staying stuck in an error state until manually reconnected.
+> - Improves autostart reliability on Linux (tray icon crash race and Bluetooth timeout at login); see `FIX_NOTES.md`.
 <p align="center">
   <a href="https://github.com/timschneeb/GalaxyBudsClient/releases">
     <img alt="GitHub downloads count" src="https://img.shields.io/github/downloads/thepbone/galaxybudsclient/total">
