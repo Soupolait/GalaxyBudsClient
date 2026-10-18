@@ -1,126 +1,132 @@
-# Notes locales : fix « BlueZ timed out » (issue #640) + autostart
+# Local notes: fix for "BlueZ timed out" (issue #640) + autostart
 
-> Document de travail rédigé par une IA (Mistral Vibe, Mistral AI) le 2026-10-18,
-> à la demande de Loïc. Fichier volontairement non commité / non suivi par git :
-> il décrit la configuration locale (service systemd) en plus du patch de code.
-> Le patch de code lui-même est commité : `6becfa74`.
+> Working document written by an AI (Mistral Vibe, Mistral AI) on 2026-10-18,
+> at the request of the repository owner (Loïc). Carried in this fork to
+> document the setup: it describes the local configuration (systemd user
+> service) in addition to the code patch. The code patch itself is committed
+> as `6becfa74` (`feat(linux): auto-attach profile when device becomes available`).
 
-## 1. Diagnostic (résumé)
+## 1. Diagnosis (summary)
 
-Deux modes d'échec distincts au démarrage, observés dans `journalctl` sur 8 boots :
+Two distinct failure modes at startup, observed in `journalctl` across 8 boots:
 
-1. **Timeout BlueZ** (issue #640) : `le-connection-abort-by-local` répété,
-   puis `Gave up after 5 attempts. Timed out` dans
+1. **BlueZ timeout** (issue #640): repeated `le-connection-abort-by-local`,
+   then `Gave up after 5 attempts. Timed out` logged from
    `GalaxyBudsClient.Platform.Linux/BluetoothService.cs`.
-   Cause : les écouteurs ne sont pas en état d'accepter une connexion LE
-   (dans le boîtier, endormis, ou connectés au téléphone — pas de multipoint
-   sur les Buds4 Pro). Ce n'est PAS « BlueZ pas prêt » : bluetoothd répond
-   à chaque tentative ; c'est l'établissement radio BlueZ→Buds qui échoue.
-   Réessayer plus de fois n'y change rien tant que les Buds sont injoignables.
+   Cause: the earbuds are not accepting an LE connection (in the case,
+   asleep, or connected to the phone — Buds4 Pro have no standard Bluetooth
+   multipoint). This is NOT "BlueZ not ready": bluetoothd answers every
+   attempt; what fails is the radio-level BlueZ→earbuds connection.
+   Retrying more often does not help while the earbuds are unreachable.
 
-2. **Erreur résiduelle** : une fois l'abandon prononcé, l'app n'écoutait plus
-   BlueZ. Quand les Buds devenaient disponibles (connexion via GNOME, mise
-   à l'oreille), l'app ne s'en rendait pas compte : le profil SMEP n'était
-   jamais attaché, l'erreur restait à l'écran, et un clic manuel sur
-   « Connecter » fonctionnait instantanément (raccourci « déjà connecté »).
+2. **Residual error**: once the app gave up, it stopped listening to BlueZ.
+   When the earbuds later became available (connected via GNOME, or put in
+   the ears), the app never noticed: the SMEP profile was never attached,
+   the error stayed on screen, and a manual click on "Connect" worked
+   instantly (the existing already-connected shortcut).
 
-Il y avait aussi un crash au login (icône tray / extension AppIndicator GNOME,
-exception Avalonia `DBusTrayIconImpl.CreateTrayIcon`), contourné côté système
-voir §3 — non corrigé dans le code à ce jour.
+There was also a crash at login (tray icon / GNOME AppIndicator extension,
+Avalonia exception in `DBusTrayIconImpl.CreateTrayIcon`), worked around at
+the system level — see §3. Not fixed in the application code to date.
 
-## 2. Patch de code (commit 6becfa74)
+## 2. Code patch (commit 6becfa74)
 
-Fichier : `GalaxyBudsClient.Platform.Linux/BluetoothService.cs` (+55 lignes).
+File: `GalaxyBudsClient.Platform.Linux/BluetoothService.cs` (+55 lines).
 
-- Nouveau watcher `RecoveryWatcher` (abonnement one-shot à la propriété D-Bus
-  `Connected` du device BlueZ).
-- Armé dans les deux chemins d'abandon de `ConnectAsync` :
-  boucle des 5 tentatives, et timeout d'attente de la propriété `Connected`.
-- Déclenchement : `Connected=true` (connexion initiée par le bureau, ou
-  auto-connexion des Buds) → relance automatique de `ConnectAsync`, qui
-  profite du raccourci « déjà connecté » pour attacher le profil SMEP en ~1 s.
-- Gardes : effacé à l'entrée de tout nouveau cycle de connexion (un clic
-  manuel le remplace) ; pas armé si le watchdog post-connexion est déjà
-  actif (invariant « un seul abonnement à la fois » préservé) ; verrou
-  anti-réentrance contre les recouvrements.
+- New `RecoveryWatcher` (one-shot subscription to the BlueZ device's
+  `Connected` D-Bus property).
+- Armed on both give-up paths of `ConnectAsync`: the 5-attempt basic
+  connection loop, and the timeout while waiting for the `Connected`
+  property.
+- Trigger: `Connected=true` (desktop-initiated connection, or the earbuds
+  auto-connecting when worn) → automatically re-run `ConnectAsync`, which
+  uses the existing already-connected shortcut to attach the SMEP profile
+  in ~1 s.
+- Guards: cleared whenever a new connect cycle starts (a manual click
+  supersedes it); not armed if the post-connection watchdog is already
+  active (the existing single-subscription invariant is preserved);
+  reentrancy lock against overlapping recovery attempts.
 
-### Limites honnêtes
-- **C'est un band-aid** sur le symptôme de l'issue #640, pas un fix des causes
-  racines : les abandons `le-connection-abort-by-local` côté kernel et le
-  timeout BlueZ de ~50 s par tentative restent inchangés.
-- **Déclenché par évènement uniquement** : si les Buds redeviennent
-  joignables mais que rien n'initie de connexion, aucune relance n'a lieu.
-- **Coût du watcher** : un abonnement D-Bus persistant (signal
-  `PropertiesChanged`) tant que l'app est en état de récupération.
-  Pas de polling, pas de timer : sur la batterie du PC l'impact est
-  négligeable, mais l'abonnement existe et consomme un minimum.
-- Comportement inchangé sur Windows/macOS (backend Linux uniquement).
+### Honest limitations
+- **This is a band-aid** on the symptom of issue #640, not a fix of the
+  root causes: the kernel-side `le-connection-abort-by-local` failures and
+  the ~50 s BlueZ per-attempt timeout are unchanged.
+- **Event-driven only**: if the earbuds become reachable but nothing
+  initiates a connection, no retry happens.
+- **Watcher cost**: one persistent D-Bus subscription (the
+  `PropertiesChanged` signal) while the app is in recovery state.
+  No polling, no timers: the impact on laptop battery is negligible,
+  but the subscription exists and costs a minimum.
+- Behavior unchanged on Windows/macOS (Linux backend only).
 
-### Tests réalisés (CachyOS, GNOME 51, BlueZ/PipeWire, Buds4 Pro)
-1. Buds injoignables → 5 échecs → watcher armé (ligne de log
+### Tests performed (CachyOS, GNOME 51, BlueZ/PipeWire, Buds4 Pro)
+1. Earbuds unreachable → 5 failures → watcher armed (log line
    `Retrying automatically once the device becomes available`).
-2. Buds laissées sur le téléphone → silence total, aucune boucle de retry.
-3. Connexion manuelle via GNOME (sans toucher l'app) →
-   `Device became available. Retrying connection...` puis
-   `Connected to profile` ~1 s après, app pleinement fonctionnelle.
-4. Double connexion manuelle concurrente → absorbée par les gardes
-   pré-existantes (`Already connecting`), aucun crash.
+2. Earbuds left on the phone → total silence, no retry loop.
+3. Manual connection via GNOME (without touching the app) →
+   `Device became available. Retrying connection...` then
+   `Connected to profile` ~1 s later, app fully functional.
+4. Concurrent double manual connection → absorbed by the pre-existing
+   guards (`Already connecting`), no crash.
 
-## 3. Service systemd (contournement autostart)
+## 3. systemd service (autostart workaround)
 
-Fichier : `~/.config/systemd/user/galaxybudsclient.service`
-(remplace l'entrée `~/.config/autostart/galaxybudsclient.desktop`, supprimée).
+File: `~/.config/systemd/user/galaxybudsclient.service`
+(replaces the `~/.config/autostart/galaxybudsclient.desktop` entry, removed).
 
-Points importants de la config locale :
+Important points of the local configuration:
 
-- `WantedBy=graphical-session.target` : démarre au login graphique.
-- `ExecStartPre=/usr/bin/sleep 25` (actuellement réduit à 1 pour les tests) :
-  laisse bluetoothd/wireplumber et l'extension AppIndicator s'initialiser.
-  **Piège CachyOS** : `/usr/lib/systemd/user.conf.d/00-timeout.conf` impose
-  `DefaultTimeoutStartSec=15s` aux unités utilisateur → sans le
-  `TimeoutStartSec=45s` explicite dans l'unité, le sleep 25 est tué avant
-  la fin et le service échoue en boucle (« start-pre operation timed out »).
-- `Restart=on-failure` + `RestartSec=10` : relance l'app si elle crash
-  (course de l'icône tray au login) ; l'extension est alors prête et la
-  relance réussit.
-- `StartLimitIntervalSec=120` / `StartLimitBurst=4` (section `[Unit]`) :
-  arrêt définitif après 4 échecs en 2 min (les redémarrages espacés de
-  >10 s contournaient la limite par défaut).
-- `ExecStart` pointe actuellement sur le binaire local de test :
+- `WantedBy=graphical-session.target`: starts on graphical login.
+- `ExecStartPre=/usr/bin/sleep 25` (currently reduced to 1 for testing):
+  lets bluetoothd/wireplumber and the AppIndicator extension initialize.
+  **CachyOS pitfall**: `/usr/lib/systemd/user.conf.d/00-timeout.conf` sets
+  `DefaultTimeoutStartSec=15s` for user units → without the explicit
+  `TimeoutStartSec=45s` in the unit, the sleep 25 is killed before it
+  finishes and the service fails in a loop ("start-pre operation timed out").
+- `Restart=on-failure` + `RestartSec=10`: relaunches the app if it crashes
+  (tray icon race at login); by then the extension is ready and the
+  relaunch succeeds.
+- `StartLimitIntervalSec=120` / `StartLimitBurst=4` (in the `[Unit]`
+  section): definite stop after 4 failures within 2 minutes (restarts
+  spaced more than 10 s apart bypass the default start limit).
+- `ExecStart` currently points to the local test binary:
   `/home/loic/Téléchargements/dev/GalaxyBudsClient/bin_linux64/GalaxyBudsClient`
-  (à remettre sur `/usr/bin/galaxybudsclient` quand une release/paquet
-  officiel inclura le fix).
+  (to be switched back to `/usr/bin/galaxybudsclient` once an official
+  release/package includes the fix).
 
-### Build local utilisé
+### Local build used
 ```bash
 dotnet publish -f net10.0 -r linux-x64 -o bin_linux64 -c Release \
   -p:PublishSingleFile=true --self-contained true \
   GalaxyBudsClient/GalaxyBudsClient.csproj
 ```
-Note : `global.json` épingle le SDK 10.0.300 ; avec le SDK 10.0.113 installé,
-il faut adapter temporairement la version puis restaurer le fichier
-(le build du 2026-10-18 a été fait ainsi, `global.json` est revenu à l'état git).
+Note: `global.json` pins SDK 10.0.300; with the installed SDK 10.0.113,
+the version must be adjusted temporarily and the file restored afterwards
+(the 2026-10-18 build was done this way; `global.json` is back to its
+committed state).
 
-## 4. Pour commenter l'issue #640
+## 4. For commenting on issue #640
 
-Éléments utiles à y mentionner :
-- L'erreur vient de la boucle de retry de `BluetoothService.cs` ; les tentatives
-  échouent au niveau radio (`le-connection-abort-by-local`), pas parce que
-  BlueZ est indisponible.
-- Après l'abandon, l'app n'écoute aucun signal BlueZ : une connexion ultérieure
-  des écouteurs n'est jamais détectée, d'où l'erreur « qui reste ».
-- Patch proposé (commit 6becfa74, backend Linux) : watcher one-shot sur
-  `Connected` + relance auto. Testé matériellement (3 scénarios ci-dessus).
-- Pistes non couvertes : retry sur évènement « device détecté pendant un scan »
-  plutôt que `Connected=true` seulement ; interrogation de l'état
-  (`GetConnectedAsync`) périodique légère.
+Useful points to mention there:
+- The error comes from the retry loop in `BluetoothService.cs`; the attempts
+  fail at the radio level (`le-connection-abort-by-local`), not because
+  BlueZ is unavailable.
+- After the give-up, the app listens to no BlueZ signal: a later connection
+  of the earbuds is never detected, hence the error that "stays".
+- Proposed patch (commit 6becfa74, Linux backend): one-shot watcher on
+  `Connected` + automatic retry. Hardware-tested (3 scenarios above).
+- Uncovered leads: retry on a "device found during scan" event instead of
+  `Connected=true` only; lightweight periodic state polling
+  (`GetConnectedAsync`).
 
-## 5. Pour revenir en arrière
+## 5. Rollback
 
-- Code : `git revert 6becfa74` (ou `git checkout 754b6fdf -- GalaxyBudsClient.Platform.Linux/BluetoothService.cs` avant le commit de revert).
-- Service : rétablir `ExecStart=/usr/bin/galaxybudsclient /StartMinimized`,
-  remettre `ExecStartPre=/usr/bin/sleep 25` si souhaité, puis
+- Code: `git revert 6becfa74` (or
+  `git checkout 754b6fdf -- GalaxyBudsClient.Platform.Linux/BluetoothService.cs`
+  before committing the revert).
+- Service: restore `ExecStart=/usr/bin/galaxybudsclient /StartMinimized`,
+  put `ExecStartPre=/usr/bin/sleep 25` back if desired, then
   `systemctl --user daemon-reload && systemctl --user restart galaxybudsclient.service`.
-- Option d'origine : recréer `~/.config/autostart/galaxybudsclient.desktop`
-  avec `Exec=/usr/bin/galaxybudsclient /StartMinimized`, puis
+- Original setup: recreate `~/.config/autostart/galaxybudsclient.desktop`
+  with `Exec=/usr/bin/galaxybudsclient /StartMinimized`, then
   `systemctl --user disable --now galaxybudsclient.service`.
