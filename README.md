@@ -21,6 +21,24 @@
   </a>
 </p>
 
+## Building from source
+
+Requires the [.NET SDK](https://dotnet.microsoft.com/download) (see `global.json` for the pinned version) and git:
+
+```bash
+git clone https://github.com/Soupolait/GalaxyBudsClient.git
+cd GalaxyBudsClient
+dotnet publish -f net10.0 -r linux-x64 -o bin_linux64 -c Release \
+  -p:PublishSingleFile=true --self-contained true \
+  GalaxyBudsClient/GalaxyBudsClient.csproj
+```
+
+The self-contained single-file binary is output to `bin_linux64/GalaxyBudsClient` (no .NET runtime is required on the target machine). For other RIDs (e.g. `linux-arm64`), replace `-r linux-x64`.
+
+If your installed SDK is older than the one pinned in `global.json`, temporarily adjust its `version` field, build, then restore the file.
+
+See [FIX_NOTES.md](FIX_NOTES.md) for the fixes carried by this fork and the systemd autostart workaround. Prebuilt Linux binaries are available under [Releases](https://github.com/Soupolait/GalaxyBudsClient/releases).
+
 ## Credits
 
 ### Contributors
