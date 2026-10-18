@@ -1,7 +1,7 @@
 # Local notes: fix for "BlueZ timed out" (issue #640) + autostart
 
 > Working document written by an AI (Mistral Vibe, Mistral AI) on 2026-10-18,
-> at the request of the repository owner (Loïc). Carried in this fork to
+> at the request of the repository owner. Carried in this fork to
 > document the setup: it describes the local configuration (systemd user
 > service) in addition to the code patch. The code patch itself is committed
 > as `6becfa74` (`feat(linux): auto-attach profile when device becomes available`).
@@ -89,8 +89,8 @@ Important points of the local configuration:
 - `StartLimitIntervalSec=120` / `StartLimitBurst=4` (in the `[Unit]`
   section): definite stop after 4 failures within 2 minutes (restarts
   spaced more than 10 s apart bypass the default start limit).
-- `ExecStart` currently points to the local test binary:
-  `/home/loic/Téléchargements/dev/GalaxyBudsClient/bin_linux64/GalaxyBudsClient`
+- `ExecStart` currently points to the locally built test binary:
+  `/path/to/GalaxyBudsClient/bin_linux64/GalaxyBudsClient`
   (to be switched back to `/usr/bin/galaxybudsclient` once an official
   release/package includes the fix).
 
